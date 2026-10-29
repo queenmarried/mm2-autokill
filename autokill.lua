@@ -1,7 +1,10 @@
 --[[
-	MM2 Coin Tracker v2 (Luau, XENO)
-	Источник: PlayerGui.MainGUI.Game.CoinBags.Container.<Bag>...Coins (путь подтверждён для мешка Candy).
+	MM2 Coin Tracker v3 (Luau, XENO)
+	Счётчик: PlayerGui.MainGUI.Game.CoinBags.Container.<Bag>...Coins (путь подтверждён для мешка Candy).
+	Все мешки в Container определяются автоматически.
+	Elite: геймпас 429957 (лимит 50, иначе 40).
 	Insert - скрыть/показать GUI. UNBIND - полная остановка.
+	Credits: queenmarried
 ]]
 
 local env = (typeof(getgenv) == "function" and getgenv()) or _G
@@ -12,6 +15,7 @@ end
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 repeat task.wait() until Players.LocalPlayer
 local player = Players.LocalPlayer
@@ -29,21 +33,33 @@ local MUTED = Color3.fromRGB(140, 130, 170)
 local GREEN = Color3.fromRGB(90, 220, 130)
 local AMBER = Color3.fromRGB(255, 190, 70)
 
+local FULL_H = 236
+local ELITE_PASS_ID = 429957
+
 -- ========== Состояние ==========
 local alive = true
 local conns = {}
-local bags, order = {}, {} -- имя мешка -> запись; порядок
-local current, pinned, sel = nil, false, 0
+local bags = {} -- имя мешка -> запись
+local current = nil
 local lastReset = -100
 local sig = {}
 local WEIGHT = { endText = 1, teleport = 1, labelDrop = 1, respawn = 0.5 }
-local FULL_AT = 50 -- порог FULL-RESET
 local fullReset, fullBusy = false, false
 local deathConn
+local elite = nil -- true / false / nil (не определено)
+local updateTier -- задаётся ниже
 
 local function track(c)
 	if c then conns[#conns + 1] = c end
 	return c
+end
+
+local function tierLimit()
+	return (elite == true) and 50 or 40
+end
+
+local function effLimit(rec)
+	return (rec and rec.limit) or tierLimit()
 end
 
 -- ========== Хелперы ==========
@@ -87,7 +103,7 @@ local function findCounter(bag)
 	return nil
 end
 
--- лимит: ищем "n/m" или метки с именем max/limit внутри мешка (если игра их показывает)
+-- лимит из текста игры ("n/m" или метка max/limit), если игра его показывает
 local function findLimit(bag)
 	for _, o in ipairs(bag:GetDescendants()) do
 		if o:IsA("TextLabel") or o:IsA("TextButton") then
@@ -142,7 +158,7 @@ if not pcall(function() gui.Parent = pickParent() end) then
 end
 
 local root = make("CanvasGroup", {
-	Name = "Root", Size = UDim2.fromOffset(240, 218), Position = UDim2.new(0, 24, 0.4, 0),
+	Name = "Root", Size = UDim2.fromOffset(240, FULL_H), Position = UDim2.new(0, 24, 0.4, 0),
 	BackgroundColor3 = BG, BorderSizePixel = 0, GroupTransparency = 1,
 }, gui)
 make("UICorner", { CornerRadius = UDim.new(0, 12) }, root)
@@ -152,7 +168,7 @@ local scale = make("UIScale", { Scale = 0.92 }, root)
 local bar = make("Frame", { Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = BAR, BorderSizePixel = 0 }, root)
 make("TextLabel", {
 	Size = UDim2.new(1, -50, 1, 0), Position = UDim2.fromOffset(14, 0), BackgroundTransparency = 1,
-	Text = "MM2 COIN TRACKER", Font = FONT, TextSize = 12, TextColor3 = PURPLE_L,
+	Text = "COIN TRACKER = RESET", Font = FONT, TextSize = 12, TextColor3 = PURPLE_L,
 	TextXAlignment = Enum.TextXAlignment.Left,
 }, bar)
 local minBtn = make("TextButton", {
@@ -172,7 +188,7 @@ local numLabel = make("TextLabel", {
 local numScale = make("UIScale", { Scale = 1 }, numLabel)
 local limitLabel = make("TextLabel", {
 	Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 106), BackgroundTransparency = 1,
-	Text = "LIMIT: —", Font = FONT, TextSize = 11, TextColor3 = MUTED,
+	Text = "LIMIT: 40", Font = FONT, TextSize = 11, TextColor3 = MUTED,
 }, root)
 
 local dot = make("Frame", {
@@ -180,15 +196,13 @@ local dot = make("Frame", {
 }, root)
 make("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
 local statusLabel = make("TextLabel", {
-	Size = UDim2.fromOffset(110, 20), Position = UDim2.fromOffset(30, 125), BackgroundTransparency = 1,
+	Size = UDim2.fromOffset(100, 20), Position = UDim2.fromOffset(30, 125), BackgroundTransparency = 1,
 	Text = "SEARCHING", Font = FONT, TextSize = 11, TextColor3 = AMBER, TextXAlignment = Enum.TextXAlignment.Left,
 }, root)
-local bagBtn = make("TextButton", {
-	Size = UDim2.fromOffset(88, 20), Position = UDim2.new(1, -102, 0, 125), BackgroundColor3 = BG2,
-	Text = "AUTO: —", Font = FONT, TextSize = 9, TextColor3 = PURPLE_L, BorderSizePixel = 0,
-	TextTruncate = Enum.TextTruncate.AtEnd,
+local tierLabel = make("TextLabel", {
+	Size = UDim2.fromOffset(100, 20), Position = UDim2.new(1, -114, 0, 125), BackgroundTransparency = 1,
+	Text = "ELITE: ?", Font = FONT, TextSize = 11, TextColor3 = AMBER, TextXAlignment = Enum.TextXAlignment.Right,
 }, root)
-make("UICorner", { CornerRadius = UDim.new(0, 6) }, bagBtn)
 
 local fullBtn = make("TextButton", {
 	Size = UDim2.fromOffset(212, 24), Position = UDim2.fromOffset(14, 152), BackgroundColor3 = BG2,
@@ -202,13 +216,17 @@ local unbindBtn = make("TextButton", {
 }, root)
 make("UICorner", { CornerRadius = UDim.new(0, 8) }, unbindBtn)
 
+make("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 216), BackgroundTransparency = 1,
+	Text = "CREDITS · queenmarried", Font = FONT, TextSize = 10, TextColor3 = MUTED,
+}, root)
+
 -- ========== Отрисовка ==========
 local function render()
 	local r = current and bags[current]
 	numLabel.Text = tostring(r and r.collected or 0)
-	limitLabel.Text = (r and r.limit) and ("LIMIT: " .. r.limit) or "LIMIT: —"
+	limitLabel.Text = "LIMIT: " .. effLimit(r)
 	captionLabel.Text = current and (current:upper() .. " COLLECTED") or "COINS COLLECTED"
-	bagBtn.Text = (pinned and "BAG: " or "AUTO: ") .. (current and current:upper() or "—")
 end
 
 local function pop()
@@ -241,7 +259,7 @@ local function anyCollected()
 	return false
 end
 
--- ========== Сброс раунда ==========
+-- ========== Сброс ==========
 local function doReset()
 	for _, r in pairs(bags) do
 		r.collected = 0
@@ -265,7 +283,7 @@ local function resetOnDeath()
 	pop()
 end
 
--- FULL-RESET: сброс персонажа при достижении FULL_AT монет
+-- FULL-RESET: сброс персонажа при заполнении мешка (40 / 50 с Elite)
 local function triggerFullReset()
 	fullBusy = true
 	task.delay(0.4, function()
@@ -301,6 +319,11 @@ local function onText(rec)
 	local v, m = parseNumber(l.Text)
 	if not v then return end
 	if m and m >= 1 and m <= 500 then rec.limit = m end
+	-- значение выше 40 возможно только с Elite
+	if v > 40 and v <= 50 and elite ~= true then
+		elite = true
+		updateTier()
+	end
 	local d = v - rec.last
 	rec.last = v
 	if d < 0 then
@@ -316,10 +339,10 @@ local function onText(rec)
 		end
 		rec.afterReset = false
 		rec.collected += d
-		if not pinned then current = rec.name end
+		current = rec.name -- всегда показываем мешок, где идёт прирост
 		render()
-		if current == rec.name then pop() end
-		if fullReset and not fullBusy and current == rec.name and rec.collected >= FULL_AT then
+		pop()
+		if fullReset and not fullBusy and rec.collected >= effLimit(rec) then
 			triggerFullReset()
 		end
 	end
@@ -341,6 +364,10 @@ local function bind(rec, lbl)
 			rec.dropped = true
 		end
 	end
+	if v > 40 and v <= 50 and elite ~= true then
+		elite = true
+		updateTier()
+	end
 	rec.limit = m or findLimit(rec.bag) or rec.limit
 	rec.conn = lbl:GetPropertyChangedSignal("Text"):Connect(function() onText(rec) end)
 end
@@ -356,7 +383,6 @@ local function syncBags()
 					if not rec then
 						rec = { name = bag.Name, collected = 0, last = 0, dropped = false, afterReset = false }
 						bags[bag.Name] = rec
-						order[#order + 1] = bag.Name
 						if not current then current = bag.Name end
 					end
 					rec.bag = bag
@@ -375,6 +401,15 @@ local function syncBags()
 	end
 	for _, rec in pairs(bags) do
 		if rec.label and not rec.label:IsDescendantOf(playerGui) then bind(rec, nil) end
+	end
+	-- если показанный мешок пуст, а в другом уже есть монеты - переключаемся
+	local best
+	for _, r in pairs(bags) do
+		if r.collected > 0 and (not best or r.collected > best.collected) then best = r end
+	end
+	if best and (not current or not bags[current] or bags[current].collected == 0) and current ~= best.name then
+		current = best.name
+		render()
 	end
 	refreshStatus()
 end
@@ -399,7 +434,7 @@ end
 local collapsed = false
 track(minBtn.MouseButton1Click:Connect(function()
 	collapsed = not collapsed
-	tw(root, 0.2, { Size = UDim2.fromOffset(240, collapsed and 32 or 218) })
+	tw(root, 0.2, { Size = UDim2.fromOffset(240, collapsed and 32 or FULL_H) })
 end))
 
 local dragging, dragStart, startPos
@@ -426,32 +461,66 @@ track(UIS.InputBegan:Connect(function(input)
 	end
 end))
 
-track(bagBtn.MouseButton1Click:Connect(function()
-	if #order == 0 then return end
-	sel = (sel + 1) % (#order + 1) -- 0 = AUTO
-	if sel == 0 then
-		pinned = false
-	else
-		pinned = true
-		current = order[sel]
-	end
-	render()
-end))
-
+-- ========== FULL-RESET кнопка и Elite ==========
 local function renderFull()
-	fullBtn.Text = fullReset and ("FULL-RESET: ON (" .. FULL_AT .. ")") or "FULL-RESET: OFF"
+	local r = current and bags[current]
+	fullBtn.Text = fullReset and ("FULL-RESET: ON (" .. effLimit(r) .. ")") or "FULL-RESET: OFF"
 	fullBtn.BackgroundColor3 = fullReset and PURPLE or BG2
 	fullBtn.TextColor3 = fullReset and WHITE or MUTED
 end
+
+updateTier = function()
+	if elite == true then
+		tierLabel.Text = "ELITE · 50"
+		tierLabel.TextColor3 = PURPLE_L
+	elseif elite == false then
+		tierLabel.Text = "STANDARD · 40"
+		tierLabel.TextColor3 = MUTED
+	else
+		tierLabel.Text = "ELITE: ?"
+		tierLabel.TextColor3 = AMBER
+	end
+	render()
+	renderFull()
+end
+
 track(fullBtn.MouseButton1Click:Connect(function()
 	fullReset = not fullReset
 	renderFull()
 	local r = current and bags[current]
-	if fullReset and r and r.collected >= FULL_AT and not fullBusy then
+	if fullReset and r and r.collected >= effLimit(r) and not fullBusy then
 		triggerFullReset()
 	end
 end))
-renderFull()
+
+-- автоопределение Elite: владение геймпасом (ID 429957); запасной путь - значение счётчика > 40
+track(MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(plr, id, purchased)
+	if plr == player and id == ELITE_PASS_ID and purchased then
+		elite = true
+		updateTier()
+	end
+end))
+
+task.spawn(function()
+	for _ = 1, 4 do
+		if not alive then return end
+		local ok, owns = pcall(function()
+			return MarketplaceService:UserOwnsGamePassAsync(player.UserId, ELITE_PASS_ID)
+		end)
+		if ok and type(owns) == "boolean" then
+			if owns then
+				elite = true
+			elseif elite ~= true then
+				elite = false
+			end
+			updateTier()
+			return
+		end
+		task.wait(3)
+	end
+end)
+
+updateTier()
 
 -- ========== Остановка ==========
 local function stop()
@@ -473,7 +542,7 @@ end
 track(unbindBtn.MouseButton1Click:Connect(stop))
 env.__MM2CT = { stop = stop }
 
--- ========== Сигналы конца раунда ==========
+-- ========== Смерть / респавн / конец раунда ==========
 local prevPos
 
 local function watchCharacter(char)
